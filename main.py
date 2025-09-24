@@ -272,6 +272,17 @@ if __name__ == '__main__':
         prog_list = [torch.nn.Sequential(torch.nn.Linear(input_dim, k), torch.nn.LayerNorm(k), torch.nn.ReLU(), torch.nn.Linear(k,k)).to(device) for l in layer_select]
         alpha_list = [torch.nn.Parameter(torch.tensor(0.0), requires_grad=True) for l in layer_select]
         exit_list = [torch.nn.Linear(k*2, num_classes).to(device) for l in layer_select] # output node
+        # 단일 깊이로만 학습하면, 모델이 최종 레이어에서만 supervision(정답 신호)을 받음음
+
+        # 하지만 중간 레이어에서도 classifier(exit_list)를 달아주면, 각 레이어가 직접 예측을 학습하게 됨됨
+        # shallow layer는 빠른 추론/early-exit에 유리
+        # deeper layer는 더 풍부한 표현 학습에 유리
+        # 결국, inference 시에도 “얕은 레이어에서 충분히 confident하면 거기서 exit”할 수 있음음. → 효율성 확보.
+
+        # 즉, layer_select가 [1, 2, 3]이면:
+        # 1번째 인코더 출력 → exit branch 달아서 예측
+        # 2번째 인코더 출력 → exit branch 달아서 예측
+        # 3번째 인코더 출력 → exit branch 달아서 예측
 
         classifier = torch.nn.Linear(k*2, num_classes).to(device)
         T=config.T

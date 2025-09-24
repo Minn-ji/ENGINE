@@ -13,7 +13,6 @@ import matplotlib.pyplot as plt
 from torch_geometric.utils import to_networkx
 
 
-
 # data = Data(x=x, edge_index=edge_index)
 
 # # PyTorch Geometric의 그래프를 NetworkX로 변환
@@ -53,20 +52,25 @@ def get_raw_text_ddxplus(data_path='./gnn_data/', SEED=0, device='cpu'):
     embedding_model = SentenceTransformer('all-MiniLM-L6-v2', device=device)
     print("Model loaded.")
 
-    jsonl_files = glob.glob(os.path.join(data_path, "*.jsonl"))
-    jsonl_files = [jsonl_files[0]]
-    # 엔티티 매핑 (전체 entity space)
     with open(f"{data_path}entities.txt") as f:
         global_entities = [line.strip().lower() for line in f if line.strip()]
+    # entity_to_idx : 질병, 증상을 모두 포함하여 {"이름": ID}로 매핑되어있는 사전
     entity_to_idx = {entity.lower().strip(): idx for idx, entity in enumerate(global_entities)}
     all_edges = []
-    all_labels = []
+    disease_entity = []
+    jsonl_files = glob.glob(os.path.join(data_path, "*.jsonl"))
+    jsonl_files = [jsonl_files[0]] # sampling
+    entities = []
     for i, file in enumerate(jsonl_files):
         with open(file, 'r') as f:
             for line in tqdm(f, total=len(file)):
                 case_data = json.loads(line)
                 # --- 2. 엔티티(노드) 및 인덱스 매핑 생성 ---
-                subgraph_entities = case_data['subgraph']['entities']
+                symptom_entities = case_data['subgraph']['entities']
+                disease_entities = [head for head, rel, tail in case_data['subgraph']['tuples']]
+                disease_entity.extend(disease_entities)
+                subgraph_entities = list(set(symptom_entities + disease_entities))
+                entities.extend(subgraph_entities)
                 local_map = {e: entity_to_idx[e] for e in subgraph_entities if e in entity_to_idx}
 
                 for head, rel, tail in case_data['subgraph']['tuples']:
@@ -74,36 +78,46 @@ def get_raw_text_ddxplus(data_path='./gnn_data/', SEED=0, device='cpu'):
                         h, t = local_map[head], local_map[tail]
                         all_edges.append([h, t])
                         all_edges.append([t, h])
+# 각 subGraph를 하나의 학습 데이터로 하여, 모든 노드를 넣고 여기서 정답을 찾도록 해야하는 것? 
+# 즉 학습의 입력은 subGraph가 되고, subGraph에 대해 GNN이 학습을 진행한 후, 정답 노드를 찾도록 하는 것 . 그렇다면 
+    all_labels = []
+    indices = []
+    disease_entity = list(set(disease_entity))
+    entities = list(set(entities))
+    for entity in entities:
+        if entity in disease_entity and entity.lower().strip() in entity_to_idx:
+            all_labels.append(1)
+            indices.append(entity_to_idx[entity.lower().strip()])
+        else:
+            all_labels.append(-9999)
 
-                for ans in case_data['answers']:
-                    if ans.lower().replace(' ', '_') in local_map:
-                        all_labels.append(entity_to_idx[ans.lower().replace(' ', '_')]) # 질병만 들어감
-  
+    fetch_map = {e: entity_to_idx[e] for e in entities if e in entity_to_idx}
     edge_index = torch.tensor(all_edges, dtype=torch.long).t().contiguous()
-    formatted_entities = [name.replace('_', ' ') for name in global_entities]
+    formatted_entities = [name.replace('_', ' ') for name in entities]
+    print("edge_index", edge_index.shape)
     with torch.no_grad():
-        # 3. 노드 인덱스 생성
-        x = embedding_model.encode(global_entities, convert_to_tensor=True, device=device).float()
-    y = torch.tensor(all_labels, dtype=torch.long) 
-    idx_to_entity = {idx: ent for ent, idx in entity_to_idx.items()}
-    print("label의 개수 : ", len(set(all_labels)),"\n", [idx_to_entity[idx] for idx in list(set(all_labels))])
+        x = embedding_model.encode(formatted_entities, convert_to_tensor=True, device=device).float() # x.shape = [num_nodes, hidden_dim]
+    y = torch.tensor(all_labels, dtype=torch.long) # 질병노드는 1 아닌 건 -99999
+    idx_to_entity = {idx: ent for ent, idx in fetch_map.items()}
+    indices = list(set(indices))
+    y_result = [idx_to_entity[idx] for idx in indices if idx != 0]
+    print("label의 개수 : ", len(y_result),"\n", y_result)
 
-
-    # --- 6. PyG Data 객체 생성 (기존과 동일) ---
+    # PyG Data 객체 생성
     data = Data(x=x, edge_index=edge_index, y=y)
-    data.id = case_data['id']
-    data.question = case_data['question']
-    data.entities = global_entities
-    data.num_target_nodes = len(all_labels)
-    data.num_nodes = len(global_entities)
+    # data.id = case_data['id']
+    # data.question = case_data['question']
+    data.entities = entities
+    data.num_nodes = len(all_labels)
+    print("is same? : ", len(data.entities), data.num_nodes, x.shape)
 
     ####################### 시각화 용 ########################
     G = to_networkx(data, to_undirected=True)
     labels = {i: ent for i, ent in enumerate(data.entities)}
 
     node_colors = []
-    for idx in range(len(data.entities)):
-        if idx in all_labels:  
+    for idx in all_labels:
+        if idx == 1:  
             node_colors.append("blue")       # 정답 노드 
         else:
             node_colors.append("lightgray") # 나머지 → 회색
@@ -121,35 +135,50 @@ def get_raw_text_ddxplus(data_path='./gnn_data/', SEED=0, device='cpu'):
     )
     plt.savefig("graph_all.png", dpi=300)
     #####################################################
-
-    # 라벨이 존재하는 노드만 필터링 (질병 노드만)
-    labeled_nodes = torch.nonzero(data.y != -1, as_tuple=False).squeeze() 
-    labeled_nodes = labeled_nodes.numpy()
-    np.random.shuffle(labeled_nodes)
-
     node_id = np.arange(data.num_nodes)
     np.random.shuffle(node_id)
 
-    train_end = int(len(labeled_nodes) * 0.6)
-    val_end   = int(len(labeled_nodes) * 0.8)
-    data.train_id = labeled_nodes[:train_end]
-    data.val_id   = labeled_nodes[train_end:val_end]
-    data.test_id  = labeled_nodes[val_end:]
-    data.train_mask = torch.zeros(data.num_nodes, dtype=torch.bool)
-    data.val_mask   = torch.zeros(data.num_nodes, dtype=torch.bool)
-    data.test_mask  = torch.zeros(data.num_nodes, dtype=torch.bool)
-
-    data.train_mask[data.train_id] = True
-    data.val_mask[data.val_id]     = True
-    data.test_mask[data.test_id]   = True
+    data.train_id = np.sort(node_id[:int(data.num_nodes * 0.6)])
+    data.val_id = np.sort(
+        node_id[int(data.num_nodes * 0.6):int(data.num_nodes * 0.8)])
+    data.test_id = np.sort(node_id[int(data.num_nodes * 0.8):])
 
 
-    # return train_graphs, val_graphs, test_graphs
+    data.train_mask = torch.tensor(
+        [x in data.train_id for x in range(data.num_nodes)])
+    data.val_mask = torch.tensor(
+        [x in data.val_id for x in range(data.num_nodes)])
+    data.test_mask = torch.tensor(
+        [x in data.test_id for x in range(data.num_nodes)])
+
     return data, data.entities, data.num_nodes
-# Graph data, text, num_classes
-# --- 사용 예시 ---
+
+
+    # # 라벨이 존재하는 노드만 필터링 (질병 노드만)
+    # labeled_nodes = torch.nonzero(data.y != -1, as_tuple=False).squeeze() 
+    # labeled_nodes = labeled_nodes.numpy()
+    # np.random.shuffle(labeled_nodes)
+
+    # node_id = np.arange(data.num_nodes)
+    # np.random.shuffle(node_id)
+    # train_end = int(len(labeled_nodes) * 0.6)
+    # val_end   = int(len(labeled_nodes) * 0.8)
+    # data.train_id = labeled_nodes[:train_end]
+    # data.val_id   = labeled_nodes[train_end:val_end]
+    # data.test_id  = labeled_nodes[val_end:]
+    # data.train_mask = torch.zeros(data.num_nodes, dtype=torch.bool)
+    # data.val_mask   = torch.zeros(data.num_nodes, dtype=torch.bool)
+    # data.test_mask  = torch.zeros(data.num_nodes, dtype=torch.bool)
+
+    # data.train_mask[data.train_id] = True
+    # data.val_mask[data.val_id]     = True
+    # data.test_mask[data.test_id]   = True
+
+    # return data, data.entities, data.num_target_nodes
+
+
 if __name__ == '__main__':
-    # GPU 사용 가능 여부 확인
+
     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Using device: {DEVICE}")
 
@@ -164,14 +193,12 @@ if __name__ == '__main__':
             print("\n--- Example Train Graph (with Text Embeddings) ---")
             graph = data[0]
             print(graph)
-            print(f"Graph ID: {graph.id}")
             print(f"Number of nodes: {graph.num_nodes}")
             # 특징 벡터의 차원이 노드 수가 아닌, 임베딩 모델의 차원(384)으로
             print(f"Node features shape: {graph.x.shape}") 
             print(f"Edge index shape: {graph.edge_index.shape}")
             print(f"Label (answer node index): {graph.y}")
-            answer_node_name = [graph.entities[i] for i in graph.y]
-            print(f"Label (answer node name): {answer_node_name}")
+            print(f"Label (answer node name): {graph.entities}")
         
     except FileNotFoundError:
         print(f"Error: Make sure '.jsonl' is in the '{DATASET_PATH}' directory.")

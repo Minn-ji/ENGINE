@@ -63,28 +63,30 @@ def get_raw_text_ddxplus(data_path='./gnn_data/', SEED=0, device='cpu'):
         with open(file, 'r') as f:
             for line in tqdm(f, total=len(file)):
                 case_data = json.loads(line)
-                # --- 2. 엔티티(노드) 및 인덱스 매핑 생성 ---
-                subgraph_entities = case_data['subgraph']['entities']
+                symptom_entities = case_data['subgraph']['entities']
+                disease_entities = [head for head, rel, tail in case_data['subgraph']['tuples']]
+                subgraph_entities = symptom_entities + disease_entities
+                subgraph_entities = list(set(subgraph_entities))
+                local_entity_to_idx = {e: i for i, e in enumerate(subgraph_entities)}
+                # 증상 + 질병 노드 엔티티 종합합
                 num_nodes = len(subgraph_entities)
 
-                # --- 3. 노드 특징(x)을 텍스트 임베딩으로 생성 ---
-                # 엔티티 이름의 '_'를 공백으로 바꿔 모델이 더 잘 이해하도록\
+                # 노드 특징(x)을 텍스트 임베딩으로 생성
+                # 엔티티 이름의 '_'를 공백으로 바꿔 모델이 더 잘 이해하도록
                 formatted_entities = [name.replace('_', ' ') for name in subgraph_entities]
-                
+
                 # Sentence Transformer 모델을 사용해 텍스트를 임베딩 벡터로 변환
                 with torch.no_grad(): # 그래디언트 계산 비활성화
                     embeddings = embedding_model.encode(formatted_entities, convert_to_tensor=True, device=device)
                 
+                # 서브그래프 내에 있는 증상 노드들에 대한 임베딩 생성
                 x = embeddings.float()
 
-                # --- 4. 엣지 인덱스(edge_index) 생성 ---
-                # --- 4. 엣지 인덱스(edge_index) 생성 ---
+                # 엣지 인덱스(edge_index) 생성 ---
                 edge_list = []
-                local_entity_to_idx = {e: i for i, e in enumerate(subgraph_entities)}
-
                 for head, rel, tail in case_data['subgraph']['tuples']:
                     if head in local_entity_to_idx and tail in local_entity_to_idx:
-                        h_idx, t_idx = local_entity_to_idx[head], local_entity_to_idx[tail]
+                        h_idx, t_idx =local_entity_to_idx[head], local_entity_to_idx[tail]
                         edge_list.append([h_idx, t_idx])
                         edge_list.append([t_idx, h_idx])  # 무방향 그래프
 
@@ -95,21 +97,29 @@ def get_raw_text_ddxplus(data_path='./gnn_data/', SEED=0, device='cpu'):
                     edge_index = torch.unique(edge_index, dim=1)
 
 
-                # --- 5. 정답 레이블(y) 생성 (기존과 동일) ---
+                # 정답 레이블(y) 생성 ---
                 if isinstance(case_data['answers'], list):
-                    answers = [a.lower().replace(" ", "_") for a in case_data['answers']]
+                    answer = case_data['answers'][0].lower().replace(" ", "_")
                 else:
-                    answers = case_data['answers'].lower().replace(" ", "_").split(",")
+                    answer = case_data['answers'].lower().replace(" ", "_")
                 answer_indices = []
-                
-                local_entity_to_idx = {e: i for i, e in enumerate(subgraph_entities)}
-                for a in answers:
-                    if a in local_entity_to_idx:
-                        answer_indices.append(local_entity_to_idx[a])
+                answer_labels = []
 
-                y = torch.tensor(answer_indices, dtype=torch.long)
+                if answer in local_entity_to_idx:
+                    answer_indices.append(local_entity_to_idx[answer])
+                for entity in subgraph_entities:
+                    if entity == answer and entity.lower().strip() in local_entity_to_idx:
+                        answer_labels.append(1)
+                    else: 
+                        answer_labels.append(-9999)
+                idx_to_entity = {idx: ent for ent, idx in local_entity_to_idx.items()}
+    
+                y_result = [idx_to_entity[idx] for idx in answer_indices]
+                print("answer_labels", answer_labels, y_result)
 
-                # --- 6. PyG Data 객체 생성 (기존과 동일) ---
+                y = torch.tensor(answer_labels, dtype=torch.long)
+
+                # PyG Data 객체 생성
                 data = Data(x=x, edge_index=edge_index, y=y)
                 data.id = case_data['id']
                 data.question = case_data['question']
@@ -119,15 +129,21 @@ def get_raw_text_ddxplus(data_path='./gnn_data/', SEED=0, device='cpu'):
                 labels = {i: ent for i, ent in enumerate(data.entities)}
 
                 # 노드 색 (평균값 같은 스칼라 필요)
-                node_colors = [data.x[i].mean().item() for i in range(data.num_nodes)]
-
+                node_colors = []
+                for idx in answer_labels:
+                    if idx == 1:  
+                        node_colors.append("blue")       # 정답 노드 
+                    else:
+                        node_colors.append("lightgray") # 나머지 → 회색
+                pos=nx.spring_layout(G, k=0.3)
                 plt.figure(figsize=(10, 8))
                 nx.draw(
                     G,
+                    pos,
                     labels=labels,                   # 엔티티 이름으로 라벨 표시
                     node_color=node_colors,
                     cmap=plt.cm.Blues,
-                    node_size=4000,
+                    node_size=1000,
                     font_size=10,
                     font_color="black"
                 )
@@ -135,24 +151,27 @@ def get_raw_text_ddxplus(data_path='./gnn_data/', SEED=0, device='cpu'):
                 plt.savefig(f"result_fig/graph_{case_data['id']}.png", dpi=300)
 
                 graphs.append(data)
+                break
             print(f"graph of id : {i}\n", graphs)
+    return graphs[0]
 
-    # --- 7. 데이터 분할 (기존과 동일) ---
-    random.shuffle(graphs)
-    num_graphs = len(graphs)
-    train_end = int(num_graphs * 0.8)
-    val_end = int(num_graphs * 0.9)
 
-    train_graphs = graphs[:train_end]
-    val_graphs = graphs[train_end:val_end]
-    test_graphs = graphs[val_end:]
+    # # --- 7. 데이터 분할 (기존과 동일) ---
+    # random.shuffle(graphs)
+    # num_graphs = len(graphs)
+    # train_end = int(num_graphs * 0.8)
+    # val_end = int(num_graphs * 0.9)
 
-    print(f"\nTotal graphs: {num_graphs}")
-    print(f"Train graphs: {len(train_graphs)}")
-    print(f"Validation graphs: {len(val_graphs)}")
-    print(f"Test graphs: {len(test_graphs)}")
+    # train_graphs = graphs[:train_end]
+    # val_graphs = graphs[train_end:val_end]
+    # test_graphs = graphs[val_end:]
 
-    return train_graphs, val_graphs, test_graphs
+    # print(f"\nTotal graphs: {num_graphs}")
+    # print(f"Train graphs: {len(train_graphs)}")
+    # print(f"Validation graphs: {len(val_graphs)}")
+    # print(f"Test graphs: {len(test_graphs)}")
+
+    # return train_graphs, val_graphs, test_graphs
 
 # --- 사용 예시 ---
 if __name__ == '__main__':
@@ -164,21 +183,21 @@ if __name__ == '__main__':
     DATASET_PATH = './gnn_data/' 
     
     try:
-        train_data, val_data, test_data = get_raw_text_ddxplus(data_path=DATASET_PATH, device=DEVICE)
+        graph = get_raw_text_ddxplus(data_path=DATASET_PATH, device=DEVICE)
         
-        if train_data:
+        if graph:
             # 첫 번째 학습용 그래프 정보 출력
             print("\n--- Example Train Graph (with Text Embeddings) ---")
-            first_graph = train_data[0]
+            first_graph = graph
             print(first_graph)
-            print(f"Graph ID: {first_graph.id}")
-            print(f"Number of nodes: {first_graph.num_nodes}")
-            # 특징 벡터의 차원이 노드 수가 아닌, 임베딩 모델의 차원(384)으로
-            print(f"Node features shape: {first_graph.x.shape}") 
-            print(f"Edge index shape: {first_graph.edge_index.shape}")
-            print(f"Label (answer node index): {first_graph.y}")
-            answer_node_name = [first_graph.entities[i] for i in first_graph.y]
-            print(f"Label (answer node name): {answer_node_name}")
+            # print(f"Graph ID: {first_graph.id}")
+            # print(f"Number of nodes: {first_graph.num_nodes}")
+            # # 특징 벡터의 차원이 노드 수가 아닌, 임베딩 모델의 차원(384)으로
+            # print(f"Node features shape: {first_graph.x.shape}") 
+            # print(f"Edge index shape: {first_graph.edge_index.shape}")
+            # print(f"Label (answer node index): {first_graph.y}")
+            # answer_node_name = [first_graph.entities[i] for i in first_graph.y]
+            # print(f"Label (answer node name): {answer_node_name}")
         
     except FileNotFoundError:
         print(f"Error: Make sure '.jsonl' is in the '{DATASET_PATH}' directory.")
