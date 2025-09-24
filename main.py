@@ -26,14 +26,14 @@ def get_hidden_states(config):
         layers_hid = torch.load(os.path.join(path, 'layer_attr.pt'))
 
     xs = layers_hid
-    return xs
+    return xs  # 미리 저장된 LLM hidden들
 
 def get_dataloader(data, config):
     train_idx = data.train_mask.nonzero().squeeze()
     val_idx = data.val_mask.nonzero().squeeze()
     test_idx = data.test_mask.nonzero().squeeze()
     kwargs = {'batch_size': 256, 'num_workers': 6, 'persistent_workers': True}
-    if config.sampler =='rw':
+    if config.sampler =='rw': # 랜덤 워커
         train_graphs = collect_subgraphs(train_idx, data, walk_steps=config.walk_steps, restart_ratio=config.restart)
         val_graphs = collect_subgraphs(val_idx, data, walk_steps=config.walk_steps, restart_ratio=config.restart)
         test_graphs = collect_subgraphs(test_idx, data, walk_steps=config.walk_steps, restart_ratio=config.restart)
@@ -41,7 +41,7 @@ def get_dataloader(data, config):
         val_loader = DataLoader(val_graphs, **kwargs)
         test_loader = DataLoader(test_graphs, **kwargs)
     else:
-        if config.dataset in ['ogbn-arxiv', 'arxiv_2023', 'photo'] and os.path.exists(f'../subgraphs/{config.dataset}/khop-1/train.pt') and os.path.exists(f'../subgraphs/{config.dataset}/khop-1/val.pt') and os.path.exists(f'../subgraphs/{config.dataset}/khop-1/test.pt'):
+        if config.dataset in ['ogbn-arxiv', 'arxiv_2023', 'photo', 'ddxplus'] and os.path.exists(f'../subgraphs/{config.dataset}/khop-1/train.pt') and os.path.exists(f'../subgraphs/{config.dataset}/khop-1/val.pt') and os.path.exists(f'../subgraphs/{config.dataset}/khop-1/test.pt'):
             print('using cache of subgraphs')
             train_graphs = torch.load(f'../subgraphs/{config.dataset}/khop-1/train.pt')
             val_graphs = torch.load(f'../subgraphs/{config.dataset}/khop-1/val.pt')
@@ -79,7 +79,7 @@ def efficient_train_eval(train_loader, val_loader, test_loader, xs, model_list, 
             total_loss = 0
             for i, m in enumerate(model_list):
                 m.train()
-                prog_list[i].train()
+                prog_list[i].train() # whatt
                 exit_list[i].train()
                 if i == 0:
                     # out = m(prog_list[i](xs[i][data.original_idx]), data.edge_index)
@@ -230,7 +230,7 @@ def eval(test_loader, xs, model_list, prog_list,  alpha_list):
             data.root_n_index = data.root_n_id
         out = torch.cat([out[data.root_n_index], global_mean_pool(out, data.batch)], dim=1)
         out = classifier(out)
-        pred = out.argmax(dim=1)
+        pred = out.argmax(dim=1) ## inference 개발
         correct += (pred == data.y).sum()
     acc = int(correct) / total
     print(f'Accuracy: {acc:.4f}') 
@@ -271,7 +271,7 @@ if __name__ == '__main__':
         model_list = [encoders[config.encoder](k, config.layer_num, hidden, k, activation=config.activation, norm=config.norm, last_activation=(l !=len(layer_select)-1), dropout=config.dropout).to(device) for l in layer_select]
         prog_list = [torch.nn.Sequential(torch.nn.Linear(input_dim, k), torch.nn.LayerNorm(k), torch.nn.ReLU(), torch.nn.Linear(k,k)).to(device) for l in layer_select]
         alpha_list = [torch.nn.Parameter(torch.tensor(0.0), requires_grad=True) for l in layer_select]
-        exit_list = [torch.nn.Linear(k*2, num_classes).to(device) for l in layer_select]
+        exit_list = [torch.nn.Linear(k*2, num_classes).to(device) for l in layer_select] # output node
 
         classifier = torch.nn.Linear(k*2, num_classes).to(device)
         T=config.T
@@ -301,3 +301,4 @@ if __name__ == '__main__':
     final_acc, final_acc_std = np.mean(acc_list), np.std(acc_list)
     print(f"# final_acc: {final_acc*100:.2f}±{final_acc_std*100:.2f}")
     
+### CUDA_VISIBLE_DEVICES=3 python main.py --config ./configs/citeseer/engine.yaml

@@ -129,4 +129,4 @@ if __name__ == '__main__':
         
     final_acc, final_acc_std = np.mean(acc_list), np.std(acc_list)
     print(f"# final_acc: {final_acc*100:.2f}±{final_acc_std*100:.2f}")
-    
+    '''그래프 구조를 쓰지 않고, 텍스트 정보만 있는 node classification을 LM'''

@@ -10,7 +10,7 @@ import torch_geometric.transforms as T
 
 
 def get_cora_casestudy(SEED=0):
-    data_X, data_Y, data_citeid, data_edges = parse_cora()
+    data_X, data_Y, data_citeid, data_edges = parse_cora() ###########
     # data_X = sklearn.preprocessing.normalize(data_X, norm="l1")
 
     torch.manual_seed(SEED)
@@ -60,13 +60,14 @@ def get_cora_casestudy(SEED=0):
 def parse_cora():
     path = './datasets/cora_orig/cora'
     idx_features_labels = np.genfromtxt(
-        "{}.content".format(path), dtype=np.dtype(str))
+        "{}.content".format(path), dtype=np.dtype(str)) ######
     data_X = idx_features_labels[:, 1:-1].astype(np.float32)
     labels = idx_features_labels[:, -1]
     class_map = {x: i for i, x in enumerate(['Case_Based', 'Genetic_Algorithms', 'Neural_Networks',
                                             'Probabilistic_Methods', 'Reinforcement_Learning', 'Rule_Learning', 'Theory'])}
+    # 질병명으로 변경
     data_Y = np.array([class_map[l] for l in labels])
-    data_citeid = idx_features_labels[:, 0]
+    data_citeid = idx_features_labels[:, 0]  # 노드의 텍스트 
     idx = np.array(data_citeid, dtype=np.dtype(str))
     idx_map = {j: i for i, j in enumerate(idx)}
     edges_unordered = np.genfromtxt(

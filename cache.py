@@ -10,23 +10,23 @@ import math
 from utils.args import Arguments
 
 
-def collect_txt(idx, txt):
-    tmp = []
-    for i in idx:
-        tmp.append(txt[i])
-    return tmp
+# def collect_txt(idx, txt):
+#     tmp = []
+#     for i in idx:
+#         tmp.append(txt[i])
+#     return tmp
 
-def process_text(text):
-    refined_txt_arr = []
-    for txt in text:
-        refined_txt = txt.split('\n')[1]
-        assert refined_txt[:10] == 'Abstract: '
-        refined_txt_arr.append(refined_txt[10:])
-    return refined_txt_arr
+# def process_text(text):
+#     refined_txt_arr = []
+#     for txt in text:
+#         refined_txt = txt.split('\n')[1]
+#         assert refined_txt[:10] == 'Abstract: '
+#         refined_txt_arr.append(refined_txt[10:])
+#     return refined_txt_arr
 
 
-def save_hidden_states(path, max_length=512, llm_model='llama'):
-    assert llm_model in ['llama', 'bert', 'baichuan', 'vicuna']
+def save_hidden_states(text, path, max_length=512, llm_model='bert', device='cpu'):
+    assert llm_model in ['bert', 'baichuan', 'openai']
 
     if llm_model == 'baichuan':
         tokenizer = AutoTokenizer.from_pretrained("baichuan-inc/Baichuan2-7B-Base", use_fast=False, trust_remote_code=True)
@@ -45,18 +45,6 @@ def save_hidden_states(path, max_length=512, llm_model='llama'):
         
         hidden_layers = len(model.layers)
 
-    elif llm_model == 'llama':
-        # Llama
-        token_id="meta-llama/Llama-2-7b-hf"
-        model_id="meta-llama/Llama-2-7b-hf"
-
-        tokenizer = LlamaTokenizer.from_pretrained(token_id)
-        tokenizer.pad_token = tokenizer.eos_token
-
-        model = LlamaModel.from_pretrained(model_id, load_in_8bit=True, device_map='auto', torch_dtype=torch.float16, output_hidden_states=True, return_dict=True)
-        model.config.pad_token_id = model.config.eos_token_id
-        
-        hidden_layers = len(model.layers)
     # ***************************************************************
 
     elif llm_model == 'bert':
@@ -74,7 +62,7 @@ def save_hidden_states(path, max_length=512, llm_model='llama'):
     batch_size = 8
     model.eval()
     layers = [[] for i in range(hidden_layers+1)]
-    for i in tqdm(range(math.ceil(len(text)/batch_size))):
+    for i in tqdm(range(math.ceil(len(text)/batch_size))): # 배치 처리
         if (i+1)*batch_size <= len(text):
             txt = text[(i)*batch_size: (i+1)*batch_size]
         else:
@@ -112,8 +100,14 @@ def save_hidden_states(path, max_length=512, llm_model='llama'):
 
 if __name__ == '__main__':
     args = Arguments().parse_args()
-    
     data, text, num_classes = load_data(args.dataset, use_text=True, use_gpt=False)
+    # 그래프, 노드 텍스트, 클래스 개수
     path = f'./llm_cache/{args.dataset}/layers'
+    os.makedirs(path, exist_ok=True)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    save_hidden_states(path, 512, 'llama')
+    save_hidden_states(text, path, 512, llm_model='llama', device=device)
+
+
+
+'''이거 먼저
+python cache.py --dataset ddxplus'''

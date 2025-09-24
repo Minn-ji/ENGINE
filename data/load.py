@@ -28,12 +28,14 @@ def load_data(dataset, use_dgl=False, use_text=False, use_gpt=False, seed=0):
     elif dataset == 'photo':
         from data.data_utils.load_photo import get_raw_text_photo as get_raw_text
         num_classes = 12
+    elif dataset == 'ddxplus':
+        from data.data_utils.load_ddxplus import get_raw_text_ddxplus as get_raw_text
     else:
         exit(f'Error: Dataset {dataset} not supported')
     
     # use explanations as data augmentation (in the Future)
     if use_gpt:
-        data, text = get_raw_text(use_text=False, seed=seed)
+        data, text = get_raw_text(seed=seed)
         folder_path = './datasets/gpt_responses/{}'.format(dataset)
         print(f"using gpt: {folder_path}")
         n = data.y.shape[0]
