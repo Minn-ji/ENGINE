@@ -7,3 +7,4 @@ llm_cache
 .venv/*
 *.png
 /data/gnn_data
+/subgraphs
