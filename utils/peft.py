@@ -1,4 +1,4 @@
-from peft import LoraConfig, PromptTuningInit, PromptTuningConfig, get_peft_model, prepare_model_for_int8_training, TaskType, IA3Config
+from peft import LoraConfig, PromptTuningInit, PromptTuningConfig, get_peft_model, prepare_model_for_kbit_training, TaskType, IA3Config
 
 
 def create_peft_config(model, method='lora'):
@@ -32,7 +32,7 @@ def create_peft_config(model, method='lora'):
         raise NotImplementedError(f'{method} is not implemented!')
 
     # prepare int-8 model for training
-    model = prepare_model_for_int8_training(model)
+    model = prepare_model_for_kbit_training(model)
     # add LoRA adaptor
     model = get_peft_model(model, peft_config)
     model.print_trainable_parameters()

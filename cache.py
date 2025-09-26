@@ -9,23 +9,8 @@ import math
 
 from utils.args import Arguments
 
-
-# def collect_txt(idx, txt):
-#     tmp = []
-#     for i in idx:
-#         tmp.append(txt[i])
-#     return tmp
-
-# def process_text(text):
-#     refined_txt_arr = []
-#     for txt in text:
-#         refined_txt = txt.split('\n')[1]
-#         assert refined_txt[:10] == 'Abstract: '
-#         refined_txt_arr.append(refined_txt[10:])
-#     return refined_txt_arr
-
-
-def save_hidden_states(text, path, max_length=512, llm_model='bert', device='cpu'):
+# 모든 subgraph 엔티티가 global_entities 안에 다 포함되어있으므로, global_entities 전체를 한 번 임베딩 → 캐싱
+def save_hidden_states(gloabal_entitiy, path, max_length=512, llm_model='bert', device='cpu'):
     assert llm_model in ['bert', 'baichuan', 'openai']
 
     if llm_model == 'baichuan':
@@ -50,7 +35,7 @@ def save_hidden_states(text, path, max_length=512, llm_model='bert', device='cpu
     elif llm_model == 'bert':
         # Sentence BERT
         tokenizer = AutoTokenizer.from_pretrained('sentence-transformers/bert-base-nli-mean-tokens')
-        model = AutoModel.from_pretrained('sentence-transformers/bert-base-nli-mean-tokens', output_hidden_states=True, return_dict=True).cuda()
+        model = AutoModel.from_pretrained('sentence-transformers/bert-base-nli-mean-tokens', output_hidden_states=True, return_dict=True).to(device)
         hidden_layers = 12
     #Mean Pooling - Take attention mask into account for correct averaging
     def mean_pooling(model_output, attention_mask):
@@ -61,6 +46,7 @@ def save_hidden_states(text, path, max_length=512, llm_model='bert', device='cpu
 
     batch_size = 8
     model.eval()
+    text =list(gloabal_entitiy.keys())
     layers = [[] for i in range(hidden_layers+1)]
     for i in tqdm(range(math.ceil(len(text)/batch_size))): # 배치 처리
         if (i+1)*batch_size <= len(text):
@@ -88,24 +74,21 @@ def save_hidden_states(text, path, max_length=512, llm_model='bert', device='cpu
             layer_node_hid = mean_pooling(layer_hid, model_input['attention_mask'].cpu())
             layers[i].append(layer_node_hid.cpu())
             
-                
-        
-
     # layers_hid = [torch.stack(xs).float() for xs in layers]
     layers_hid = [torch.cat(xs).float() for xs in layers]
 
     if not os.path.exists(path):
         os.makedirs(path)
-    torch.save(layers_hid, f=os.path.join(path, 'layer_attr.pt'))
+    torch.save(layers_hid, os.path.join(path, 'layer_attr.pt'))
 
 if __name__ == '__main__':
     args = Arguments().parse_args()
-    data, text, num_classes = load_data(args.dataset, use_text=True, use_gpt=False)
+    graphs, gloabal_entitiy = load_data(args.dataset, use_text=True, use_gpt=False)
     # 그래프, 노드 텍스트, 클래스 개수
     path = f'./llm_cache/{args.dataset}/layers'
     os.makedirs(path, exist_ok=True)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    save_hidden_states(text, path, 512, llm_model='llama', device=device)
+    save_hidden_states(gloabal_entitiy, path, 512, llm_model='bert', device=device)
 
 
 

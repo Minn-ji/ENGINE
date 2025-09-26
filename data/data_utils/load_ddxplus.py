@@ -12,23 +12,20 @@ import networkx as nx
 import matplotlib.pyplot as plt
 from torch_geometric.utils import to_networkx
 
+class MyData(Data):
+    def __inc__(self, key, value, *args, **kwargs):
+        if key in ['edge_index', 'disease_idx', 'original_idx']:
+            return self.num_nodes
+        return super().__inc__(key, value, *args, **kwargs)
+
+    def __cat_dim__(self, key, value, *args, **kwargs):
+        # idx_to_entity는 concat 불필요 → 배치 과정에서 건드리지 않음
+        if key in ['idx_to_entity']:
+            return None
+        return super().__cat_dim__(key, value, *args, **kwargs)
 
 
-# data = Data(x=x, edge_index=edge_index)
-
-# # PyTorch Geometric의 그래프를 NetworkX로 변환
-# G = to_networkx(data, to_undirected=True)
-
-# # 노드의 특징 (x 값을 노드의 색으로 표현)
-# node_colors = [data.x[i].item() for i in range(data.num_nodes)]
-
-# # 그래프 시각화
-# plt.figure(figsize=(8, 6))
-# nx.draw(G, with_labels=True, node_color=node_colors, cmap=plt.cm.Blues, node_size=500, font_size=16)
-#os.makedirs('result_fig', exist_ok=True)
-# plt.savefig(f"result_fig/graph_{case_data['id']}.png", dpi=300)
-
-def get_raw_text_ddxplus(data_path='./gnn_data/', SEED=0, device='cpu'):
+def get_raw_text_ddxplus(data_path='./gnn_data', seed=0, device='cpu'):
     """
     ddxplus 데이터셋을 로드하여 각 케이스를 PyTorch Geometric의 Data 객체 리스트로 반환합니다.
     노드 특징은 Sentence Transformer를 이용한 텍스트 임베딩을 사용합니다.
@@ -36,7 +33,7 @@ def get_raw_text_ddxplus(data_path='./gnn_data/', SEED=0, device='cpu'):
 
     Args:
         data_path (str): 데이터 파일이 위치한 경로.
-        SEED (int): 데이터 분할을 위한 랜덤 시드.
+        seed (int): 데이터 분할을 위한 랜덤 시드.
         device (str): 임베딩 모델을 실행할 장치 ('cuda' 또는 'cpu').
 
     Returns:
@@ -44,9 +41,9 @@ def get_raw_text_ddxplus(data_path='./gnn_data/', SEED=0, device='cpu'):
                각각 PyG Data 객체의 리스트
     """
     # --- 1. 기본 설정 및 임베딩 모델 로드 ---
-    random.seed(SEED)
-    np.random.seed(SEED)
-    torch.manual_seed(SEED)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
 
     # 사전 학습된 언어 모델 로드. 처음 실행 시 모델을 다운로드
     print("Loading Sentence Transformer model...")
@@ -54,17 +51,20 @@ def get_raw_text_ddxplus(data_path='./gnn_data/', SEED=0, device='cpu'):
     print("Model loaded.")
 
     jsonl_files = glob.glob(os.path.join(data_path, "*.jsonl"))
+    print("jsonl_files", jsonl_files)
     jsonl_files = [jsonl_files[0]]
     # 엔티티 매핑 (전체 entity space)
-    entity_to_idx = {entity.lower().strip(): idx for idx, entity in enumerate(open(f"{data_path}entities.txt"))}
+    entity_to_idx = {entity.lower().strip(): idx for idx, entity in enumerate(open(f"{data_path}/entities.txt"))}
 
     graphs = []
     for i, file in enumerate(jsonl_files):
         with open(file, 'r') as f:
-            for line in tqdm(f, total=len(file)):
+            total_lines = sum(1 for _ in f)
+        with open(file, 'r') as f:
+            for idx, line in tqdm(enumerate(f), total=total_lines):
                 case_data = json.loads(line)
                 symptom_entities = case_data['subgraph']['entities']
-                disease_entities = [head for head, rel, tail in case_data['subgraph']['tuples']]
+                disease_entities = list(set([head for head, rel, tail in case_data['subgraph']['tuples']]))
                 subgraph_entities = symptom_entities + disease_entities
                 subgraph_entities = list(set(subgraph_entities))
                 local_entity_to_idx = {e: i for i, e in enumerate(subgraph_entities)}
@@ -96,7 +96,6 @@ def get_raw_text_ddxplus(data_path='./gnn_data/', SEED=0, device='cpu'):
                     edge_index = torch.tensor(edge_list, dtype=torch.long).t().contiguous()
                     edge_index = torch.unique(edge_index, dim=1)
 
-
                 # 정답 레이블(y) 생성 ---
                 if isinstance(case_data['answers'], list):
                     answer = case_data['answers'][0].lower().replace(" ", "_")
@@ -111,49 +110,58 @@ def get_raw_text_ddxplus(data_path='./gnn_data/', SEED=0, device='cpu'):
                     if entity == answer and entity.lower().strip() in local_entity_to_idx:
                         answer_labels.append(1)
                     else: 
-                        answer_labels.append(-9999)
-                idx_to_entity = {idx: ent for ent, idx in local_entity_to_idx.items()}
-    
-                y_result = [idx_to_entity[idx] for idx in answer_indices]
-                print("answer_labels", answer_labels, y_result)
+                        answer_labels.append(-1)
+                if 1 in answer_labels:
+                    y = torch.tensor(answer_labels, dtype=torch.long)
 
-                y = torch.tensor(answer_labels, dtype=torch.long)
+                    idx_to_entity = {idx: ent for ent, idx in local_entity_to_idx.items()}
+        
+                    y_result = [idx_to_entity[idx] for idx in answer_indices]
+                    # print("answer_labels", y_result) # answer_labels
+                    # PyG Data 객체 생성
+                    data = MyData(x=x, edge_index=edge_index, y=y)
+                    data.id = case_data['id']
+                    data.question = case_data['question']
+                    # data.idx_to_entity = idx_to_entity 
+                    data.entities = subgraph_entities
+                    data.original_idx = torch.tensor(list(local_entity_to_idx.values()), dtype=torch.long)  
+                    data.disease_idx = torch.tensor([local_entity_to_idx[d] for d in disease_entities if d in local_entity_to_idx], dtype=torch.long)
 
-                # PyG Data 객체 생성
-                data = Data(x=x, edge_index=edge_index, y=y)
-                data.id = case_data['id']
-                data.question = case_data['question']
-                data.entities = subgraph_entities
-                G = to_networkx(data, to_undirected=True)
+                    # ans = [idx_to_entity[d] for d  in data.disease_idx]
+                    # print(f"answer 후보 ({len(ans)}개 / {len(subgraph_entities)}): ", ans)
+                    # G = to_networkx(data, to_undirected=True)
 
-                labels = {i: ent for i, ent in enumerate(data.entities)}
+                    # labels = {i: ent for i, ent in enumerate(data.entities)}
 
-                # 노드 색 (평균값 같은 스칼라 필요)
-                node_colors = []
-                for idx in answer_labels:
-                    if idx == 1:  
-                        node_colors.append("blue")       # 정답 노드 
-                    else:
-                        node_colors.append("lightgray") # 나머지 → 회색
-                pos=nx.spring_layout(G, k=0.3)
-                plt.figure(figsize=(10, 8))
-                nx.draw(
-                    G,
-                    pos,
-                    labels=labels,                   # 엔티티 이름으로 라벨 표시
-                    node_color=node_colors,
-                    cmap=plt.cm.Blues,
-                    node_size=1000,
-                    font_size=10,
-                    font_color="black"
-                )
-                os.makedirs('result_fig', exist_ok=True)
-                plt.savefig(f"result_fig/graph_{case_data['id']}.png", dpi=300)
+                    # # 노드 색 (평균값 같은 스칼라 필요)
+                    # node_colors = []
+                    # for idx in answer_labels:
+                    #     if idx == 1:  
+                    #         node_colors.append("blue")       # 정답 노드 
+                    #     else:
+                    #         node_colors.append("lightgray") # s나머지 → 회색
+                    # pos=nx.spring_layout(G, k=0.3)
+                    # plt.figure(figsize=(10, 8))
+                    # nx.draw(
+                    #     G,
+                    #     pos,
+                    #     labels=labels,                   # 엔티티 이름으로 라벨 표시
+                    #     node_color=node_colors,
+                    #     cmap=plt.cm.Blues,
+                    #     node_size=1000,
+                    #     font_size=10,
+                    #     font_color="black"
+                    # )
+                    # os.makedirs('result_fig', exist_ok=True)
+                    # plt.savefig(f"result_fig/graph_{case_data['id']}.png", dpi=300)
 
-                graphs.append(data)
-                break
-            print(f"graph of id : {i}\n", graphs)
-    return graphs[0]
+                    graphs.append(data)
+                    # if idx ==10:
+                    #     break
+                else:
+                    continue
+
+    return graphs, entity_to_idx
 
 
     # # --- 7. 데이터 분할 (기존과 동일) ---
@@ -179,8 +187,8 @@ if __name__ == '__main__':
     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Using device: {DEVICE}")
 
-    # 데이터 파일이 있는 경로를 지정해주세요.
-    DATASET_PATH = './gnn_data/' 
+    # 데이터 파일이 있는 경로
+    DATASET_PATH = './gnn_data' 
     
     try:
         graph = get_raw_text_ddxplus(data_path=DATASET_PATH, device=DEVICE)
@@ -188,7 +196,7 @@ if __name__ == '__main__':
         if graph:
             # 첫 번째 학습용 그래프 정보 출력
             print("\n--- Example Train Graph (with Text Embeddings) ---")
-            first_graph = graph
+            first_graph = graph[0]
             print(first_graph)
             # print(f"Graph ID: {first_graph.id}")
             # print(f"Number of nodes: {first_graph.num_nodes}")

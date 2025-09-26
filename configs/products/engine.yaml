@@ -18,5 +18,5 @@ epochs: 200
 earlystop: True
 patience: 20
 seeds: [25,131,148,404,353]
-
+early: True
 

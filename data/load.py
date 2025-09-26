@@ -35,19 +35,20 @@ def load_data(dataset, use_dgl=False, use_text=False, use_gpt=False, seed=0):
     
     # use explanations as data augmentation (in the Future)
     if use_gpt:
-        data, text = get_raw_text(seed=seed)
-        folder_path = './datasets/gpt_responses/{}'.format(dataset)
-        print(f"using gpt: {folder_path}")
-        n = data.y.shape[0]
-        text = []
-        for i in range(n):
-            filename = str(i) + '.json'
-            file_path = os.path.join(folder_path, filename)
-            with open(file_path, 'r') as file:
-                json_data = json.load(file)
-                content = json_data['choices'][0]['message']['content']
-                text.append(content)
+        print("don't use gpt")
+        # datas = get_raw_text(seed=seed)
+        # folder_path = './datasets/gpt_responses/{}'.format(dataset)
+        # print(f"using gpt: {folder_path}")
+        # n = data.y.shape[0]
+        # text = []
+        # for i in range(n):
+        #     filename = str(i) + '.json'
+        #     file_path = os.path.join(folder_path, filename)
+        #     with open(file_path, 'r') as file:
+        #         json_data = json.load(file)
+        #         content = json_data['choices'][0]['message']['content']
+        #         text.append(content)
     else:
-        data, text = get_raw_text(use_text=True, seed=seed) 
+        graphs, text_id_dict = get_raw_text(data_path="./data/gnn_data", seed=seed) 
       
-    return data, text, num_classes
+    return graphs, text_id_dict

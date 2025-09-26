@@ -3,7 +3,7 @@ from torch_geometric.data import Data
 from torch_geometric.utils import subgraph, to_undirected, remove_isolated_nodes, dropout_adj, remove_self_loops, k_hop_subgraph, to_edge_index
 from torch_geometric.utils.num_nodes import maybe_num_nodes
 import copy
-from torch_sparse import SparseTensor
+# from torch_sparse import SparseTensor
 
 
 
@@ -22,52 +22,52 @@ def add_remaining_selfloop_for_isolated_nodes(edge_index, num_nodes):
 
     
     
-def collect_subgraphs(selected_id, graph, walk_steps=20, restart_ratio=0.5):
-    graph  = copy.deepcopy(graph) # modified on the copy
-    edge_index = graph.edge_index
-    node_num = graph.x.shape[0]
-    start_nodes = selected_id # only sampling selected nodes as subgraphs
-    graph_num = start_nodes.shape[0]
+# def collect_subgraphs(selected_id, graph, walk_steps=20, restart_ratio=0.5):
+#     graph  = copy.deepcopy(graph) # modified on the copy
+#     edge_index = graph.edge_index
+#     node_num = graph.x.shape[0]
+#     start_nodes = selected_id # only sampling selected nodes as subgraphs
+#     graph_num = start_nodes.shape[0]
     
-    value = torch.arange(edge_index.size(1))
+#     value = torch.arange(edge_index.size(1))
 
-    if type(edge_index) == SparseTensor:
-        adj_t = edge_index
-    else:
-        adj_t = SparseTensor(row=edge_index[0], col=edge_index[1],
-                                    value=value,
-                                    sparse_sizes=(node_num, node_num)).t()
+#     if type(edge_index) == SparseTensor:
+#         adj_t = edge_index
+#     else:
+#         adj_t = SparseTensor(row=edge_index[0], col=edge_index[1],
+#                                     value=value,
+#                                     sparse_sizes=(node_num, node_num)).t()
     
-    current_nodes = start_nodes.clone()
-    history = start_nodes.clone().unsqueeze(0)
-    signs = torch.ones(graph_num, dtype=torch.bool).unsqueeze(0)
-    for i in range(walk_steps):
-        seed = torch.rand([graph_num])
-        nei = adj_t.sample(1, current_nodes).squeeze()
-        sign = seed < restart_ratio
-        nei[sign] = start_nodes[sign]
-        history = torch.cat((history, nei.unsqueeze(0)), dim=0)
-        signs = torch.cat((signs, sign.unsqueeze(0)), dim=0)
-        current_nodes = nei
-    history = history.T
-    signs = signs.T
+#     current_nodes = start_nodes.clone()
+#     history = start_nodes.clone().unsqueeze(0)
+#     signs = torch.ones(graph_num, dtype=torch.bool).unsqueeze(0)
+#     for i in range(walk_steps):
+#         seed = torch.rand([graph_num])
+#         nei = adj_t.sample(1, current_nodes).squeeze()
+#         sign = seed < restart_ratio
+#         nei[sign] = start_nodes[sign]
+#         history = torch.cat((history, nei.unsqueeze(0)), dim=0)
+#         signs = torch.cat((signs, sign.unsqueeze(0)), dim=0)
+#         current_nodes = nei
+#     history = history.T
+#     signs = signs.T
     
-    graph_list = []
-    for i in range(graph_num):
-        path = history[i]
-        sign = signs[i]
-        node_idx = path.unique()
-        sources = path[:-1].numpy().tolist()
-        targets = path[1:].numpy().tolist()
-        sub_edges = torch.IntTensor([sources, targets]).long()
-        sub_edges = sub_edges.T[~sign[1:]].T
-        # undirectional
-        if sub_edges.shape[1] != 0:
-            sub_edges = to_undirected(sub_edges)
-        view = adjust_idx(sub_edges, node_idx, graph, path[0].item())
+#     graph_list = []
+#     for i in range(graph_num):
+#         path = history[i]
+#         sign = signs[i]
+#         node_idx = path.unique()
+#         sources = path[:-1].numpy().tolist()
+#         targets = path[1:].numpy().tolist()
+#         sub_edges = torch.IntTensor([sources, targets]).long()
+#         sub_edges = sub_edges.T[~sign[1:]].T
+#         # undirectional
+#         if sub_edges.shape[1] != 0:
+#             sub_edges = to_undirected(sub_edges)
+#         view = adjust_idx(sub_edges, node_idx, graph, path[0].item())
 
-        graph_list.append(view)
-    return graph_list
+#         graph_list.append(view)
+#     return graph_list
         
 def adjust_idx(edge_index, node_idx, full_g, center_idx):
     '''re-index the nodes and edge index
