@@ -1,5 +1,7 @@
 import torch
 from tqdm import tqdm
+import ast
+import wandb
 import numpy as np
 import os
 import math
@@ -67,7 +69,9 @@ def efficient_train_eval(train_loader, val_loader, test_loader, xs, model_list, 
     
     # criterion = torch.nn.CrossEntropyLoss()
     criterion = torch.nn.BCEWithLogitsLoss()
-    # criterion = LabelSmoothingCrossEntropy(smoothing=0.05)
+    os.makedirs("./checkpoints", exist_ok=True)
+    ckpt_path = f"./checkpoints/{config.dataset}_best.pt"
+
     for epoch in tqdm(range(config.epochs)):
         for batch in train_loader:
             batch = batch.to(device)
@@ -104,15 +108,30 @@ def efficient_train_eval(train_loader, val_loader, test_loader, xs, model_list, 
         val_acc = efficient_eval(val_loader, xs, model_list, prog_list,  alpha_list, exit_list)
         test_acc = efficient_eval(test_loader, xs, model_list, prog_list,  alpha_list, exit_list)
         
-        # if val_acc > best_acc:
-        #     best_acc = val_acc
-        #     cnt = 0
-        #     best_test_from_val = test_acc
-        # else:
-        #     cnt += 1
-        # if cnt >= patience:
-        #     print(f'early stop at epoch {epoch}')
-        #     return best_test_from_val
+        if val_acc > best_acc:
+            best_acc = val_acc
+            cnt = 0
+            best_test_from_val = test_acc
+
+            checkpoint = {
+                f"model_{i}": model_list[i].state_dict() for i in range(len(model_list))
+            }
+            checkpoint.update({
+                f"prog_{i}": prog_list[i].state_dict() for i in range(len(prog_list))
+            })
+            checkpoint.update({
+                f"exit_{i}": exit_list[i].state_dict() for i in range(len(exit_list))
+            })
+            checkpoint.update({
+                f"alpha_{i}": alpha_list[i].data for i in range(len(alpha_list))
+            })
+
+            torch.save(checkpoint, ckpt_path)
+            print(f"✅ Best model updated & saved at {ckpt_path} (val_acc={val_acc:.4f})")
+
+        else:
+            cnt += 1
+
     return best_test_from_val
 
 
@@ -126,6 +145,7 @@ def efficient_eval(test_loader, xs, model_list, prog_list, alpha_list, exit_list
 
         for data in data_list:
             labels = data.y[data.disease_idx].float()
+            print("labels", labels)
             total_cnt += len(data.disease_idx)
 
             last = None
@@ -150,10 +170,12 @@ def efficient_eval(test_loader, xs, model_list, prog_list, alpha_list, exit_list
                 last = out
                 hid_logits = exit_list[i](hid_out).squeeze()
                 hid_prob = torch.sigmoid(hid_logits)
-            pred_idx = hid_logits.argmax().item()
+                results += hid_prob
+            pred_idx = results.argmax().item()
             gold = labels.argmax(dim=0).item()
-
-            print(f"예측: {pred_idx}  |  정답: {gold}")
+            
+            idx_to_entity = ast.literal_eval(data.idx_to_entity)
+            print(f"예측: {idx_to_entity[pred_idx]}  |  정답: {idx_to_entity[gold]}")
             correct += int(pred_idx == gold)
 
     acc = correct / total_cnt if total_cnt > 0 else 0
@@ -166,6 +188,14 @@ if __name__ == '__main__':
     for k, v in args.items():
         config.__setattr__(k, v)
     print(config)
+
+    # ✅ wandb init
+    wandb.init(
+        project="ddxplus-engine",   # 프로젝트 이름 (원하는 걸로 변경 가능)
+        name=f"{config.dataset}-seed-exp",  # 실험 이름
+        config=vars(config)  # yaml + CLI args 그대로 로깅
+    )
+    
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     xs = get_hidden_states(config)
     xs = [x for x in xs]

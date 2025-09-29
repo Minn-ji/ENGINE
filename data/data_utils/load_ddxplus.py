@@ -110,22 +110,25 @@ def get_raw_text_ddxplus(data_path='./gnn_data', seed=0, device='cpu'):
                     if entity == answer and entity.lower().strip() in local_entity_to_idx:
                         answer_labels.append(1)
                     else: 
-                        answer_labels.append(-1)
+                        answer_labels.append(0)
+
                 if 1 in answer_labels:
                     y = torch.tensor(answer_labels, dtype=torch.long)
 
                     idx_to_entity = {idx: ent for ent, idx in local_entity_to_idx.items()}
         
-                    y_result = [idx_to_entity[idx] for idx in answer_indices]
+                    # y_result = [idx_to_entity[idx] for idx in answer_indices]
                     # print("answer_labels", y_result) # answer_labels
+                    
                     # PyG Data 객체 생성
                     data = MyData(x=x, edge_index=edge_index, y=y)
                     data.id = case_data['id']
                     data.question = case_data['question']
-                    # data.idx_to_entity = idx_to_entity 
+                    data.idx_to_entity = str(idx_to_entity) 
                     data.entities = subgraph_entities
                     data.original_idx = torch.tensor(list(local_entity_to_idx.values()), dtype=torch.long)  
                     data.disease_idx = torch.tensor([local_entity_to_idx[d] for d in disease_entities if d in local_entity_to_idx], dtype=torch.long)
+                    print(data.disease_idx)
 
                     # ans = [idx_to_entity[d] for d  in data.disease_idx]
                     # print(f"answer 후보 ({len(ans)}개 / {len(subgraph_entities)}): ", ans)

@@ -1,124 +1,110 @@
-# inference.py
 import torch
-import numpy as np
-import os
+import ast
 import yaml
 from yaml import SafeLoader
-from tqdm import tqdm
-from torch_geometric.loader import DataLoader
+from torch_geometric.data import Data
 
 from data.load import load_data
 from utils.args import Arguments
-from models.encoder import GCN_Encoder, SAGE_Encoder, GAT_Encoder, MLP_Encoder
-
-# hidden states 캐시 로드
-def get_hidden_states(config):
-    path = f'./llm_cache/{config.dataset}/layers'
-    if not os.path.exists(os.path.join(path, 'layer_attr.pt')):
-        raise FileNotFoundError(f'No cache found! Please run `python cache.py --dataset {config.dataset}` first.')
-    return torch.load(os.path.join(path, 'layer_attr.pt'))
-
-# dataloader (train/val은 불필요 → test만 사용)
-def get_test_loader(graphs, config):
-    n_total = len(graphs)
-    n_train = int(0.6 * n_total)
-    n_val   = int(0.2 * n_total)
-    n_test  = n_total - n_train - n_val
-    _, _, test_graphs = torch.utils.data.random_split(graphs, [n_train, n_val, n_test])
-    kwargs = {'batch_size': 4, 'num_workers': 6, 'persistent_workers': True}
-    return DataLoader(test_graphs, **kwargs)
+from models.encoder import GCN_Encoder, SAGE_Encoder, GIN_Encoder, MLP_Encoder, GAT_Encoder
 
 @torch.no_grad()
-def inference(test_loader, xs, model_list, prog_list, alpha_list, exit_list, T, device):
-    model_list = [m.to(device).eval() for m in model_list]
-    prog_list = [p.to(device).eval() for p in prog_list]
-    exit_list = [e.to(device).eval() for e in exit_list]
+def inference(data, xs, model_list, prog_list, alpha_list, exit_list, device, T):
+    """
+    단일 그래프 데이터 (torch_geometric.data.Data) 입력 -> 예측 반환
+    """
+    data = data.to(device)
+    labels = data.y[data.disease_idx].float()
+    
+    last = None
+    hid_logits = None
+    for i, m in enumerate(model_list):
+        m.eval()
+        prog_list[i].eval()
+        exit_list[i].eval()
 
-    correct, total_cnt = 0, 0
-    predictions = []
+        idx_tensor = torch.tensor(data.original_idx, dtype=torch.long, device=device)
 
-    for data in tqdm(test_loader, desc="Inference"):
-        data = data.to(device)
-        disease_idx = data.disease_idx
-        labels = data.y[disease_idx].float()   # [num_candidates]
-        total_cnt += 1   # 그래프 단위로 카운트
+        if i == 0:
+            out = m(prog_list[i](xs[i][idx_tensor]), data.edge_index)
+            hid_out = out[data.disease_idx]
+        else:
+            a = torch.sigmoid(alpha_list[i] / T)
+            x = prog_list[i](xs[i][idx_tensor]) * a + last * (1-a)
+            out = m(x, data.edge_index)
+            hid_out = out[data.disease_idx]
 
-        last = None
-        for i, m in enumerate(model_list):
-            if i == 0:
-                out = m(prog_list[i]((xs[i][data.original_idx.cpu()]).to(device)), data.edge_index)
-            else:
-                a = torch.sigmoid(alpha_list[i] / T)
-                x = prog_list[i]((xs[i][data.original_idx.cpu()]).to(device)) * a + last * (1 - a)
-                out = m(x, data.edge_index)
-            last = out
+        last = out
+        hid_logits = exit_list[i](hid_out).squeeze()
 
-        hid_out = last[disease_idx]
-        hid_logits = exit_list[-1](hid_out).squeeze()   # [num_candidates]
-        hid_prob = torch.sigmoid(hid_logits)
+    hid_prob = torch.sigmoid(hid_logits)
+    pred_idx = hid_prob.argmax().item()
+    gold_idx = labels.argmax().item()
 
-        pred = hid_prob.argmax(dim=0).item()
-        gold = labels.argmax(dim=0).item()
-        predictions.append((data.id, pred, gold))
+    return {
+        "pred_idx": pred_idx,
+        "gold_idx": gold_idx,
+        "probs": hid_prob.detach().cpu().numpy()
+    }
 
-        if pred == gold:
-            correct += 1
-
-    acc = correct / total_cnt if total_cnt > 0 else 0
-    return acc, predictions
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
+    # 1. Config 불러오기
     config = Arguments().parse_args()
     args = yaml.load(open(config.config), Loader=SafeLoader)
     for k, v in args.items():
-        setattr(config, k, v)
+        config.__setattr__(k, v)
+    print(config)
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    xs = [x for x in get_hidden_states(config)]
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # 데이터 로드
-    graphs, _ = load_data(config.dataset, seed=config.seeds[0])
-    test_loader = get_test_loader(graphs, config)
+    # 2. Hidden states 불러오기
+    from main import get_hidden_states
+    xs = get_hidden_states(config)
+    xs = [x.to(device) for x in xs]
 
-    # 모델 초기화
-    r=config.r
-    input_dim=config.input_dim
-    k = int(input_dim/r)
-    hidden = config.hidden_size
-    layer_select = config.layer_select
+    # 3. 모델 초기화 (학습 시와 동일하게)
     encoders = {
-        'GCN_Encoder': GCN_Encoder,
-        'GAT_Encoder': GAT_Encoder,
-        'SAGE_Encoder': SAGE_Encoder,
+        'GCN_Encoder': GCN_Encoder, 
+        'GAT_Encoder': GAT_Encoder, 
+        'SAGE_Encoder': SAGE_Encoder, 
         'MLP_Encoder': MLP_Encoder,
     }
+    r = config.r
+    input_dim = config.input_dim
+    k = int(input_dim / r)
+    hidden = config.hidden_size
+    layer_select = config.layer_select
+
     model_list = [encoders[config.encoder](k, config.layer_num, hidden, k,
-                                           activation=config.activation, norm=config.norm,
+                                           activation=config.activation,
+                                           norm=config.norm,
                                            last_activation=(l != len(layer_select)-1),
-                                           dropout=config.dropout).to(device) for l in layer_select]
+                                           dropout=config.dropout).to(device) 
+                  for l in layer_select]
     prog_list = [torch.nn.Sequential(
                     torch.nn.Linear(input_dim, k),
                     torch.nn.LayerNorm(k),
                     torch.nn.ReLU(),
-                    torch.nn.Linear(k,k)).to(device) for l in layer_select]
-    alpha_list = [torch.nn.Parameter(torch.tensor(0.0), requires_grad=True) for l in layer_select]
-    exit_list = [torch.nn.Linear(k*2, 1).to(device) for l in layer_select]
+                    torch.nn.Linear(k, k)
+                 ).to(device) for l in layer_select]
+    alpha_list = [torch.nn.Parameter(torch.tensor(0.0, device=device), requires_grad=True) for _ in layer_select]
+    exit_list = [torch.nn.Linear(k, 1).to(device) for _ in layer_select]
 
-    T=config.T
+    T = config.T
 
-    # 학습된 weight 로드
-    ckpt_path = f'./checkpoints/{config.dataset}/best_model.pt'
-    if not os.path.exists(ckpt_path):
-        raise FileNotFoundError(f"No checkpoint found at {ckpt_path}")
-    checkpoint = torch.load(ckpt_path, map_location=device)
-    for obj, state in zip(model_list+prog_list+exit_list, checkpoint["model_states"]):
-        obj.load_state_dict(state)
+    # 4. 학습된 checkpoint 불러오기
+    checkpoint = torch.load("./checkpoints/ddxplus_best.pt", map_location=device)
+    for i, m in enumerate(model_list):
+        m.load_state_dict(checkpoint[f"model_{i}"])
+        prog_list[i].load_state_dict(checkpoint[f"prog_{i}"])
+        exit_list[i].load_state_dict(checkpoint[f"exit_{i}"])
+        alpha_list[i].data = checkpoint[f"alpha_{i}"]
 
-    # Inference
-    acc, predictions = inference(test_loader, [xs[l] for l in layer_select],
-                                 model_list, prog_list, alpha_list, exit_list, T, device)
+    print("Checkpoint loaded.")
 
-    print(f"[Inference] Test Accuracy: {acc*100:.2f}%")
-    for pid, pred, gold in predictions[:20]:  # 앞 20개만 출력
-        print(f"Case {pid} → Pred: {pred}, Gold: {gold}")
+    # 5. 단일 데이터 로드 & 추론
+    graphs, text_id_dict = load_data(config.dataset, seed=config.seeds[0])
+    idx_to_entity = ast.literal_eval(graphs.idx_to_entity)
+    for idx, data in enumerate(graphs[:10]):  # 예시: 앞 10개 데이터만
+        result = inference(data, xs, model_list, prog_list, alpha_list, exit_list, device, T)
+        print(f"[Graph {idx}] 예측: {idx_to_entity[result['pred_idx']]} | 정답: {idx_to_entity[result['gold_idx']]}")
