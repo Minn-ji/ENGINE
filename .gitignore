@@ -6,7 +6,7 @@ llm_cache
 
 .venv/*
 *.png
-/data/gnn_data
+# /data/gnn_data
 /subgraphs
 /wandb
 /checkpoints
