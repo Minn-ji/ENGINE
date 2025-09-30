@@ -52,7 +52,7 @@ def get_raw_text_ddxplus(data_path='./gnn_data', seed=0, device='cpu'):
 
     jsonl_files = glob.glob(os.path.join(data_path, "*.jsonl"))
     print("jsonl_files", jsonl_files)
-    jsonl_files = [jsonl_files[0]]
+    # jsonl_files = [jsonl_files[0]]
     # 엔티티 매핑 (전체 entity space)
     entity_to_idx = {entity.lower().strip(): idx for idx, entity in enumerate(open(f"{data_path}/entities.txt"))}
 
