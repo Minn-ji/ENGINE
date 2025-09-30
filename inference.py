@@ -15,10 +15,11 @@ def inference(data, xs, model_list, prog_list, alpha_list, exit_list, device, T)
     """
     data = data.to(device)
     labels = data.y[data.disease_idx].float()
-    
+    results = torch.zeros(len(data.disease_idx), device=device)
     last = None
     hid_logits = None
     for i, m in enumerate(model_list):
+
         m.eval()
         prog_list[i].eval()
         exit_list[i].eval()
@@ -33,17 +34,20 @@ def inference(data, xs, model_list, prog_list, alpha_list, exit_list, device, T)
             x = prog_list[i](xs[i][idx_tensor]) * a + last * (1-a)
             out = m(x, data.edge_index)
             hid_out = out[data.disease_idx]
+            
 
         last = out
-        hid_logits = exit_list[i](hid_out).squeeze()
-
+        hid_logits = exit_list[i](hid_out).squeeze(-1) 
+        results += hid_logits
+    idx_to_entity = ast.literal_eval(data.idx_to_entity)
+    
     hid_prob = torch.sigmoid(hid_logits)
-    pred_idx = hid_prob.argmax().item()
-    gold_idx = labels.argmax().item()
+    pred_idx = results.argmax().item()
+    gold_idx = torch.argmax(data.y[data.disease_idx]).item()
 
     return {
-        "pred_idx": pred_idx,
-        "gold_idx": gold_idx,
+        "pred": idx_to_entity[pred_idx],
+        "gold": idx_to_entity[gold_idx],
         "probs": hid_prob.detach().cpu().numpy()
     }
 
@@ -104,7 +108,6 @@ if __name__ == "__main__":
 
     # 5. 단일 데이터 로드 & 추론
     graphs, text_id_dict = load_data(config.dataset, seed=config.seeds[0])
-    idx_to_entity = ast.literal_eval(graphs.idx_to_entity)
     for idx, data in enumerate(graphs[:10]):  # 예시: 앞 10개 데이터만
         result = inference(data, xs, model_list, prog_list, alpha_list, exit_list, device, T)
-        print(f"[Graph {idx}] 예측: {idx_to_entity[result['pred_idx']]} | 정답: {idx_to_entity[result['gold_idx']]}")
+        print(result)

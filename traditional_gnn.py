@@ -25,7 +25,7 @@ def train_subgraph(model, optimizer, criterion, config, train_loader, val_loader
         for batch in train_loader:
             batch = batch.to(device)
             optimizer.zero_grad()
-            out = model.forward_subgraph(batch.x, batch.edge_index, batch.batch, batch.root_n_index)
+            out = model.forward_subgraph(batch.x, batch.edge_index, batch.batch, batch.original_idx)
             loss = criterion(out, batch.y)
             loss.backward()
             optimizer.step()
@@ -116,21 +116,22 @@ def main(config):
     acc_list = []
     for i in range(5):
         # load data
-        data, text, num_classes = load_data(config.dataset, use_text=True, seed=i)
-        data.y = data.y.squeeze()
+        graphs = load_data(config.dataset, use_text=True, seed=i)
+        for data in graphs:
+            data.y = data.y.squeeze()
+            
+            model = load_model(data.x.shape[1], num_classes, config).to(device)
+            optimizer = torch.optim.Adam(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
+            criterion = torch.nn.CrossEntropyLoss()
+            train_loader, val_loader, test_loader = None, None, None
+            if config.subsampling:
+                train_loader, val_loader, test_loader = subsampling(data, config, sampler=config.sampler)
+            test_acc = train_eval(model, optimizer, criterion, config, data, train_loader, val_loader, test_loader, device)
+            print(i, test_acc)
+            acc_list.append(test_acc)
         
-        model = load_model(data.x.shape[1], num_classes, config).to(device)
-        optimizer = torch.optim.Adam(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
-        criterion = torch.nn.CrossEntropyLoss()
-        train_loader, val_loader, test_loader = None, None, None
-        if config.subsampling:
-            train_loader, val_loader, test_loader = subsampling(data, config, sampler=config.sampler)
-        test_acc = train_eval(model, optimizer, criterion, config, data, train_loader, val_loader, test_loader, device)
-        print(i, test_acc)
-        acc_list.append(test_acc)
-    
-    final_acc, final_acc_std = np.mean(acc_list), np.std(acc_list)
-    print(f"# final_acc: {final_acc*100:.2f}±{final_acc_std*100:.2f}")
+        final_acc, final_acc_std = np.mean(acc_list), np.std(acc_list)
+        print(f"# final_acc: {final_acc*100:.2f}±{final_acc_std*100:.2f}")
         
 
 if __name__ == '__main__':

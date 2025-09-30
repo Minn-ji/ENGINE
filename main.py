@@ -67,12 +67,14 @@ def efficient_train_eval(train_loader, val_loader, test_loader, xs, model_list, 
     best_state_list = []
     cnt = 0
     
-    # criterion = torch.nn.CrossEntropyLoss()
-    criterion = torch.nn.BCEWithLogitsLoss()
+    criterion = torch.nn.CrossEntropyLoss()
+    # criterion = torch.nn.BCEWithLogitsLoss()
     os.makedirs("./checkpoints", exist_ok=True)
     ckpt_path = f"./checkpoints/{config.dataset}_best.pt"
 
     for epoch in tqdm(range(config.epochs)):
+        epoch_loss = 0
+        step = 0
         for batch in train_loader:
             batch = batch.to(device)
             data_list = batch.to_data_list()   # 배치 안의 각 subgraph 분리
@@ -97,17 +99,31 @@ def efficient_train_eval(train_loader, val_loader, test_loader, xs, model_list, 
 
                     last = out
                     hid_out = last[data.disease_idx]
-                    hid_logits = exit_list[i](hid_out).squeeze()   # [num_candidates]
-                    labels = data.y[data.disease_idx].float()      # [num_candidates]
-                    loss = criterion(hid_logits, labels)
+                    hid_logits = exit_list[i](hid_out).squeeze(-1)
+                    # hid_logits = exit_list[i](hid_out).squeeze()   # [num_candidates]
+                    gold_idx = torch.argmax(data.y[data.disease_idx]).item()
+                    # labels = data.y[data.disease_idx].float()      # [num_candidates]
+                    labels = torch.tensor(gold_idx, dtype=torch.long, device=device)
+                    loss = criterion(hid_logits.view(1, -1), labels.view(1))
+                    # loss = criterion(hid_logits, labels)
                     total_loss += loss
 
                 total_loss.backward(retain_graph=True)
                 optimizer.step()
-            
+                
+        epoch_loss += total_loss.item()
+        step += 1
+
+        avg_loss = epoch_loss / max(1, step)
         val_acc = efficient_eval(val_loader, xs, model_list, prog_list,  alpha_list, exit_list)
         test_acc = efficient_eval(test_loader, xs, model_list, prog_list,  alpha_list, exit_list)
-        
+                # 🔥 wandb 로깅
+        wandb.log({
+            "epoch": epoch,
+            "train_loss": avg_loss,
+            "val_acc": val_acc,
+            "test_acc": test_acc
+        })
         if val_acc > best_acc:
             best_acc = val_acc
             cnt = 0
@@ -138,7 +154,7 @@ def efficient_train_eval(train_loader, val_loader, test_loader, xs, model_list, 
 def efficient_eval(test_loader, xs, model_list, prog_list, alpha_list, exit_list):
     correct = 0
     total_cnt = 0
-
+    table = wandb.Table(columns=["pred", "gold", "is_correct"])
     for batch in test_loader:
         batch = batch.to(device)
         data_list = batch.to_data_list()
@@ -168,17 +184,23 @@ def efficient_eval(test_loader, xs, model_list, prog_list, alpha_list, exit_list
                     hid_out = out[data.disease_idx]
 
                 last = out
-                hid_logits = exit_list[i](hid_out).squeeze()
-                hid_prob = torch.sigmoid(hid_logits)
-                results += hid_prob
+                hid_logits = exit_list[i](hid_out).squeeze(-1) 
+                # hid_logits = exit_list[i](hid_out).squeeze()
+                # hid_prob = torch.sigmoid(hid_logits)
+                results += hid_logits
+            print("result label: \n", results)
             pred_idx = results.argmax().item()
-            gold = labels.argmax(dim=0).item()
-            
+            # gold = labels.argmax(dim=0).item()
+            gold_idx = torch.argmax(data.y[data.disease_idx]).item()
             idx_to_entity = ast.literal_eval(data.idx_to_entity)
-            print(f"예측: {idx_to_entity[pred_idx]}  |  정답: {idx_to_entity[gold]}")
-            correct += int(pred_idx == gold)
+            
+            print(f"예측: {idx_to_entity[pred_idx]}  |  정답: {idx_to_entity[gold_idx]}")
+            is_correct = int(pred_idx == gold_idx)
+            table.add_data(idx_to_entity[pred_idx], idx_to_entity[gold_idx], is_correct)
+            correct += is_correct
 
     acc = correct / total_cnt if total_cnt > 0 else 0
+    wandb.log({"predictions": table, "eval_acc": acc})
     return acc
 
 if __name__ == '__main__':
@@ -200,54 +222,48 @@ if __name__ == '__main__':
     xs = get_hidden_states(config)
     xs = [x for x in xs]
     print(f"total layer 수 : {len(xs)}. model layer + embedding layer. model is bert.")
-    acc_list = []
     
-    for seed in range(5):
-        # load data
-        graphs, text_id_dict = load_data(config.dataset, seed=config.seeds[seed])        
-        train_loader, val_loader, test_loader = get_dataloader_ddxplus(graphs, config)
-        
-        r=config.r # used for dimensionality reduction
-        input_dim=config.input_dim 
-        k = int(input_dim/r)
-        hidden = config.hidden_size
-        layer_select = config.layer_select
-        encoders = {
-            'GCN_Encoder': GCN_Encoder, 
-            'GAT_Encoder': GAT_Encoder, 
-            'SAGE_Encoder': SAGE_Encoder, 
-            'MLP_Encoder': MLP_Encoder,
-        }
-        model_list = [encoders[config.encoder](k, config.layer_num, hidden, k, activation=config.activation, norm=config.norm, last_activation=(l !=len(layer_select)-1), dropout=config.dropout).to(device) for l in layer_select]
-        prog_list = [torch.nn.Sequential(torch.nn.Linear(input_dim, k), torch.nn.LayerNorm(k), torch.nn.ReLU(), torch.nn.Linear(k,k)).to(device) for l in layer_select]
-        alpha_list = [torch.nn.Parameter(torch.tensor(0.0), requires_grad=True) for l in layer_select]
-        exit_list = [torch.nn.Linear(k, 1).to(device) for l in layer_select]  # binary classifier 단순히 layer select 개수 만큼 바이너리 output layer가 정의된 것
-        classifier = torch.nn.Linear(k, 1).to(device)
-        T=config.T
-        lr = config.lr
-        weight_decay = config.weight_decay
-        
-        params = []
-        xs_list = []
-        for i, l in enumerate(layer_select):
-            params.append({'params': model_list[i].parameters(), 'lr': lr, 'weight_decay': weight_decay}) 
-            params.append({'params': prog_list[i].parameters(), 'lr': lr, 'weight_decay': weight_decay}) 
-            params.append({'params': alpha_list[i], 'lr': lr, 'weight_decay': weight_decay})
-            params.append({'params': exit_list[i].parameters(), 'lr': lr, 'weight_decay': weight_decay})
-            xs_list.append(xs[l])
-        params.append({'params': classifier.parameters(), 'lr': lr, 'weight_decay': weight_decay})
-        
-        optimizer = torch.optim.AdamW(params)
-        
-        # ENGINE w/ caching
+    # for seed in range(5):
+    # load data
+    graphs, text_id_dict = load_data(config.dataset, seed=config.seeds[0])        
+    train_loader, val_loader, test_loader = get_dataloader_ddxplus(graphs, config)
+    
+    r=config.r # used for dimensionality reduction
+    input_dim=config.input_dim 
+    k = int(input_dim/r)
+    hidden = config.hidden_size
+    layer_select = config.layer_select
+    encoders = {
+        'GCN_Encoder': GCN_Encoder, 
+        'GAT_Encoder': GAT_Encoder, 
+        'SAGE_Encoder': SAGE_Encoder, 
+        'MLP_Encoder': MLP_Encoder,
+    }
+    model_list = [encoders[config.encoder](k, config.layer_num, hidden, k, activation=config.activation, norm=config.norm, last_activation=(l !=len(layer_select)-1), dropout=config.dropout).to(device) for l in layer_select]
+    prog_list = [torch.nn.Sequential(torch.nn.Linear(input_dim, k), torch.nn.LayerNorm(k), torch.nn.ReLU(), torch.nn.Linear(k,k)).to(device) for l in layer_select]
+    alpha_list = [torch.nn.Parameter(torch.tensor(0.0), requires_grad=True) for l in layer_select]
+    exit_list = [torch.nn.Linear(k, 1).to(device) for l in layer_select]  # binary classifier 단순히 layer select 개수 만큼 바이너리 output layer가 정의된 것
+    classifier = torch.nn.Linear(k, 1).to(device)
+    T=config.T
+    lr = config.lr
+    weight_decay = config.weight_decay
+    
+    params = []
+    xs_list = []
+    for i, l in enumerate(layer_select):
+        params.append({'params': model_list[i].parameters(), 'lr': lr, 'weight_decay': weight_decay}) 
+        params.append({'params': prog_list[i].parameters(), 'lr': lr, 'weight_decay': weight_decay}) 
+        params.append({'params': alpha_list[i], 'lr': lr, 'weight_decay': weight_decay})
+        params.append({'params': exit_list[i].parameters(), 'lr': lr, 'weight_decay': weight_decay})
+        xs_list.append(xs[l])
+    params.append({'params': classifier.parameters(), 'lr': lr, 'weight_decay': weight_decay})
+    
+    optimizer = torch.optim.AdamW(params)
+    
+    # ENGINE w/ caching
 
-        acc = efficient_train_eval(train_loader, val_loader, test_loader, xs_list, model_list, prog_list, alpha_list, exit_list, optimizer)
-        # else: 
-        #     acc = train_eval(train_loader, val_loader, test_loader, xs_list, model_list, prog_list, alpha_list, exit_list, optimizer)
-        print(seed, acc)
-        acc_list.append(acc)
-        
-    final_acc, final_acc_std = np.mean(acc_list), np.std(acc_list)
-    print(f"# final_acc: {final_acc*100:.2f}±{final_acc_std*100:.2f}")
+    acc = efficient_train_eval(train_loader, val_loader, test_loader, xs_list, model_list, prog_list, alpha_list, exit_list, optimizer)
+
+    print(f"# final_acc: {acc*100:.2f}")
     
 ### CUDA_VISIBLE_DEVICES=3 python3 -m main --config ./configs/ddxplus/engine.yaml

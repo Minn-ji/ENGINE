@@ -8,3 +8,5 @@ llm_cache
 *.png
 /data/gnn_data
 /subgraphs
+/wandb
+/checkpoints
