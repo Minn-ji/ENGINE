@@ -220,7 +220,7 @@ if __name__ == '__main__':
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     xs = get_hidden_states(config)
-    xs = [x for x in xs]
+    xs = [x.to(device) for x in xs]  
     print(f"total layer 수 : {len(xs)}. model layer + embedding layer. model is bert.")
     
     # for seed in range(5):
